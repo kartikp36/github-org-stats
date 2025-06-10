@@ -1,12 +1,33 @@
 import { NextResponse } from 'next/server';
 import { GitHubClient } from '@/lib/github';
 
+interface StatsResponse {
+  message?: string;
+  data?: {
+    org: string;
+    since: string;
+    includeReviews: boolean;
+    excludeForks: boolean;
+    blacklist: string[];
+    top: number;
+    stats: Array<{
+      user: string;
+      commits: number;
+      linesAdded: number;
+      linesRemoved: number;
+      reviews: number;
+    }>;
+  };
+  error?: string;
+  warning?: string;
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
-    const { org, since, includeReviews, excludeForks, blacklist, top } = body;
+    const { org, since, includeReviews, excludeForks, blacklist, top, token } =
+      body;
 
-    // Validate required fields
     if (!org) {
       return NextResponse.json(
         { error: 'Organization name is required' },
@@ -14,49 +35,41 @@ export async function POST(request: Request) {
       );
     }
 
-    // Parse blacklist
-    const blacklistArray = blacklist
-      ? blacklist.split(',').map((item: string) => item.trim())
-      : [];
-
-    const client = new GitHubClient({
-      org,
+    const client = new GitHubClient(token);
+    const stats = await client.getOrgStats(org, {
       since,
       includeReviews,
       excludeForks,
-      blacklist: blacklistArray,
-      top: Number(top) || 3,
+      blacklist: blacklist
+        ? blacklist.split(',').map((s: string) => s.trim())
+        : [],
+      top: top || 3,
     });
 
-    const stats = await client.getStats();
-
-    // Ensure stats is an array
-    if (!Array.isArray(stats)) {
-      throw new Error('Invalid response from GitHub API');
-    }
-
-    return NextResponse.json({
-      message: 'Stats fetched successfully',
+    const response: StatsResponse = {
       data: {
         org,
         since,
         includeReviews,
         excludeForks,
-        blacklist: blacklistArray,
-        top: Number(top) || 3,
-        stats: stats || [],
+        blacklist: blacklist
+          ? blacklist.split(',').map((s: string) => s.trim())
+          : [],
+        top: top || 3,
+        stats,
       },
-    });
-  } catch (error: any) {
+    };
+
+    if (!token) {
+      response.warning =
+        'No GitHub token provided. API rate limits may be restricted.';
+    }
+
+    return NextResponse.json(response);
+  } catch (error: unknown) {
     console.error('Error fetching stats:', error);
-    return NextResponse.json(
-      {
-        error: error.message || 'Failed to fetch stats',
-        warning: !process.env.GITHUB_TOKEN
-          ? 'No GitHub token provided. Rate limits may apply.'
-          : undefined,
-      },
-      { status: error.message?.includes('not found') ? 404 : 500 }
-    );
+    const errorMessage =
+      error instanceof Error ? error.message : 'Failed to fetch stats';
+    return NextResponse.json({ error: errorMessage }, { status: 500 });
   }
 }

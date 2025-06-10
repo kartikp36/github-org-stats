@@ -1,6 +1,14 @@
 import { Octokit } from '@octokit/rest';
 
-export interface ContributorStats {
+interface StatsOptions {
+  since?: string;
+  includeReviews?: boolean;
+  excludeForks?: boolean;
+  blacklist?: string[];
+  top?: number;
+}
+
+interface ContributorStats {
   user: string;
   commits: number;
   linesAdded: number;
@@ -8,181 +16,153 @@ export interface ContributorStats {
   reviews: number;
 }
 
-export interface GitHubConfig {
-  token?: string;
-  org: string;
-  since?: string;
-  includeReviews: boolean;
-  excludeForks: boolean;
-  blacklist: string[];
-  top: number;
-}
-
-interface WeekStats {
-  w?: number;
-  a?: number;
-  d?: number;
-  c?: number;
-}
-
-interface ContributorData {
-  author: {
-    login: string;
-  } | null;
-  total: number;
-  weeks: WeekStats[];
-}
-
 export class GitHubClient {
   private octokit: Octokit;
-  private config: GitHubConfig;
   private hasToken: boolean;
 
-  constructor(config: GitHubConfig) {
-    this.config = config;
-    this.hasToken = Boolean(config.token || process.env.GITHUB_TOKEN);
-
+  constructor(token?: string) {
     this.octokit = new Octokit({
-      auth: config.token || process.env.GITHUB_TOKEN,
+      auth: token,
     });
+    this.hasToken = !!token;
   }
 
-  private isBlacklisted(repo: string, user: string): boolean {
-    return this.config.blacklist.some((item) => {
-      if (item.startsWith('user:')) {
-        return user === item.slice(5);
-      }
-      if (item.startsWith('repo:')) {
-        return repo === item.slice(5);
-      }
-      return user === item || repo === item;
-    });
-  }
+  async getOrgStats(
+    org: string,
+    options: StatsOptions = {}
+  ): Promise<ContributorStats[]> {
+    const {
+      since = '0s',
+      includeReviews = false,
+      excludeForks = false,
+      blacklist = [],
+      top = 3,
+    } = options;
 
-  private async getRepositories() {
     try {
+      // Get all repositories in the organization
       const repos = await this.octokit.paginate(this.octokit.repos.listForOrg, {
-        org: this.config.org,
+        org,
         type: 'all',
         per_page: 100,
       });
 
-      return repos.filter((repo) => {
-        if (this.config.excludeForks && repo.fork) {
-          return false;
+      // Filter out forks if requested
+      const filteredRepos = excludeForks
+        ? repos.filter((repo) => !repo.fork)
+        : repos;
+
+      // Get stats for each repository
+      const stats: { [key: string]: ContributorStats } = {};
+
+      for (const repo of filteredRepos) {
+        // Skip blacklisted repositories
+        if (blacklist.some((pattern) => repo.name.includes(pattern))) {
+          continue;
         }
-        return !this.isBlacklisted(repo.name, '');
-      });
-    } catch (error: any) {
-      if (error.status === 404) {
-        throw new Error(`Organization "${this.config.org}" not found`);
-      }
-      if (error.status === 403 && !this.hasToken) {
-        throw new Error(
-          'Rate limit exceeded. Please add a GitHub token to increase the limit.'
+
+        // Get commits
+        const commits = await this.octokit.paginate(
+          this.octokit.repos.listCommits,
+          {
+            owner: org,
+            repo: repo.name,
+            per_page: 100,
+          }
         );
-      }
-      throw error;
-    }
-  }
 
-  private async getContributorStats(repo: string): Promise<ContributorData[]> {
-    try {
-      const { data } = await this.octokit.repos.getContributorsStats({
-        owner: this.config.org,
-        repo,
-      });
+        // Process commits
+        for (const commit of commits) {
+          const author =
+            commit.author?.login || commit.commit.author?.name || 'unknown';
 
-      if (!data) return [];
-      return Array.isArray(data) ? (data as ContributorData[]) : [];
-    } catch (error: any) {
-      if (error.status === 403 && !this.hasToken) {
-        console.warn(
-          `Rate limit exceeded for ${repo}. Please add a GitHub token to increase the limit.`
-        );
-        return [];
-      }
-      console.error(`Error fetching stats for ${repo}:`, error);
-      return [];
-    }
-  }
-
-  private async getPRReviews(user: string) {
-    if (!this.config.includeReviews) return 0;
-
-    try {
-      const { data } = await this.octokit.search.issuesAndPullRequests({
-        q: `org:${this.config.org} reviewed-by:${user} is:pr`,
-        per_page: 1,
-      });
-
-      return data.total_count;
-    } catch (error: any) {
-      if (error.status === 403 && !this.hasToken) {
-        console.warn(
-          `Rate limit exceeded for PR reviews. Please add a GitHub token to increase the limit.`
-        );
-        return 0;
-      }
-      console.error(`Error fetching PR reviews for ${user}:`, error);
-      return 0;
-    }
-  }
-
-  public async getStats(): Promise<ContributorStats[]> {
-    try {
-      const repos = await this.getRepositories();
-      const contributorMap = new Map<string, ContributorStats>();
-
-      for (const repo of repos) {
-        const stats = await this.getContributorStats(repo.name);
-
-        for (const stat of stats) {
-          if (
-            !stat.author ||
-            this.isBlacklisted(repo.name, stat.author.login)
-          ) {
+          // Skip blacklisted users
+          if (blacklist.some((pattern) => author.includes(pattern))) {
             continue;
           }
 
-          const existing = contributorMap.get(stat.author.login) || {
-            user: stat.author.login,
-            commits: 0,
-            linesAdded: 0,
-            linesRemoved: 0,
-            reviews: 0,
-          };
+          if (!stats[author]) {
+            stats[author] = {
+              user: author,
+              commits: 0,
+              linesAdded: 0,
+              linesRemoved: 0,
+              reviews: 0,
+            };
+          }
 
-          existing.commits += stat.total;
-          existing.linesAdded += stat.weeks.reduce(
-            (sum: number, week: WeekStats) => sum + (week.a || 0),
-            0
-          );
-          existing.linesRemoved += stat.weeks.reduce(
-            (sum: number, week: WeekStats) => sum + (week.d || 0),
-            0
-          );
+          stats[author].commits++;
 
-          contributorMap.set(stat.author.login, existing);
+          // Get commit details for lines changed
+          const commitDetails = await this.octokit.repos.getCommit({
+            owner: org,
+            repo: repo.name,
+            ref: commit.sha,
+          });
+
+          if (commitDetails.data.stats) {
+            stats[author].linesAdded += commitDetails.data.stats.additions || 0;
+            stats[author].linesRemoved +=
+              commitDetails.data.stats.deletions || 0;
+          }
         }
-      }
 
-      // Get PR reviews for each contributor
-      if (this.config.includeReviews) {
-        for (const [user, stats] of contributorMap) {
-          stats.reviews = await this.getPRReviews(user);
+        // Get PR reviews if requested
+        if (includeReviews) {
+          const pulls = await this.octokit.paginate(this.octokit.pulls.list, {
+            owner: org,
+            repo: repo.name,
+            state: 'all',
+            per_page: 100,
+          });
+
+          for (const pull of pulls) {
+            const reviews = await this.octokit.paginate(
+              this.octokit.pulls.listReviews,
+              {
+                owner: org,
+                repo: repo.name,
+                pull_number: pull.number,
+                per_page: 100,
+              }
+            );
+
+            for (const review of reviews) {
+              const reviewer = review.user?.login || 'unknown';
+
+              // Skip blacklisted users
+              if (blacklist.some((pattern) => reviewer.includes(pattern))) {
+                continue;
+              }
+
+              if (!stats[reviewer]) {
+                stats[reviewer] = {
+                  user: reviewer,
+                  commits: 0,
+                  linesAdded: 0,
+                  linesRemoved: 0,
+                  reviews: 0,
+                };
+              }
+
+              stats[reviewer].reviews++;
+            }
+          }
         }
       }
 
       // Convert to array and sort by commits
-      const contributors = Array.from(contributorMap.values())
-        .sort((a, b) => b.commits - a.commits)
-        .slice(0, this.config.top);
+      const statsArray = Object.values(stats).sort(
+        (a, b) => b.commits - a.commits
+      );
 
-      return contributors;
-    } catch (error) {
-      console.error('Error getting stats:', error);
-      return [];
+      // Return top N contributors
+      return statsArray.slice(0, top);
+    } catch (error: any) {
+      if (error.status === 404) {
+        throw new Error(`Organization '${org}' not found`);
+      }
+      throw error;
     }
   }
 }
