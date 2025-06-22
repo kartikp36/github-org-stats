@@ -87,6 +87,10 @@ export default function StatsForm() {
     setError(null);
     setWarning(null);
     try {
+      // Create AbortController for timeout
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 185000); // 185 seconds (slightly more than API timeout)
+
       const response = await fetch('/api/stats', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -99,7 +103,10 @@ export default function StatsForm() {
           top,
           token,
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
       const data: ApiResponse = await response.json();
 
       if (!response.ok) {
@@ -118,8 +125,17 @@ export default function StatsForm() {
         throw new Error('Invalid response from server');
       }
     } catch (error: unknown) {
-      const errorMessage =
-        error instanceof Error ? error.message : 'Failed to fetch stats';
+      let errorMessage = 'Failed to fetch stats';
+
+      if (error instanceof Error) {
+        if (error.name === 'AbortError') {
+          errorMessage =
+            'Request timed out after 180 seconds. Try reducing the scope or using filters.';
+        } else {
+          errorMessage = error.message;
+        }
+      }
+
       setError(errorMessage);
       setStats(null);
       toast.error(errorMessage);
@@ -329,7 +345,8 @@ export default function StatsForm() {
 
       {stats && Array.isArray(stats.stats) && stats.stats.length > 0 && (
         <>
-          <div className='flex justify-end mb-4'>
+          <div className='flex justify-between mb-4 items-center'>
+            <h2 className='text-lg font-semibold'>{stats.org} Stats🚀</h2>
             <ExportOptions stats={stats} />
           </div>
           <StatsCharts stats={stats.stats} org={stats.org} />

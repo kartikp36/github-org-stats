@@ -22,6 +22,22 @@ interface StatsResponse {
   warning?: string;
 }
 
+// Timeout wrapper function
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(
+        () =>
+          reject(
+            new Error('Request timeout after ' + timeoutMs / 1000 + ' seconds')
+          ),
+        timeoutMs
+      )
+    ),
+  ]);
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
@@ -36,15 +52,20 @@ export async function POST(request: Request) {
     }
 
     const client = new GitHubClient(token);
-    const stats = await client.getOrgStats(org, {
-      since,
-      includeReviews,
-      excludeForks,
-      blacklist: blacklist
-        ? blacklist.split(',').map((s: string) => s.trim())
-        : [],
-      top: top || 3,
-    });
+
+    // Wrap the getOrgStats call with a 180-second timeout
+    const stats = await withTimeout(
+      client.getOrgStats(org, {
+        since,
+        includeReviews,
+        excludeForks,
+        blacklist: blacklist
+          ? blacklist.split(',').map((s: string) => s.trim())
+          : [],
+        top: top || 3,
+      }),
+      180000 // 180 seconds
+    );
 
     const response: StatsResponse = {
       data: {
