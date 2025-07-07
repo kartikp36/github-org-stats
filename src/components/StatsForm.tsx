@@ -355,6 +355,58 @@ export default function StatsForm() {
               <CardTitle>Contributor Statistics</CardTitle>
               <CardDescription>
                 Top {stats.top} contributors for {stats.org}
+                <br />
+                <span className='text-sm text-muted-foreground'>
+                  Date:{' '}
+                  {(() => {
+                    const now = new Date();
+                    const sinceValue = stats.since;
+                    let startDate = new Date();
+
+                    // Parse the since value to calculate start date
+                    if (sinceValue.includes('y')) {
+                      const years = parseInt(sinceValue.replace('y', ''));
+                      startDate = new Date(
+                        now.getFullYear() - years,
+                        now.getMonth(),
+                        now.getDate()
+                      );
+                    } else if (sinceValue.includes('mo')) {
+                      const months = parseInt(sinceValue.replace('mo', ''));
+                      startDate = new Date(
+                        now.getFullYear(),
+                        now.getMonth() - months,
+                        now.getDate()
+                      );
+                    } else if (sinceValue.includes('d')) {
+                      const days = parseInt(sinceValue.replace('d', ''));
+                      startDate = new Date(
+                        now.getTime() - days * 24 * 60 * 60 * 1000
+                      );
+                    } else if (sinceValue === '0s') {
+                      startDate = new Date(2008, 0, 1); // GitHub's founding date
+                    }
+
+                    const formatDate = (date: Date) => {
+                      const day = date.getDate();
+                      const month = date.toLocaleString('default', {
+                        month: 'long',
+                      });
+                      const year = date.getFullYear();
+                      const suffix =
+                        day === 1 || day === 21 || day === 31
+                          ? 'st'
+                          : day === 2 || day === 22
+                          ? 'nd'
+                          : day === 3 || day === 23
+                          ? 'rd'
+                          : 'th';
+                      return `${day}${suffix} ${month} ${year}`;
+                    };
+
+                    return `${formatDate(startDate)} to ${formatDate(now)}`;
+                  })()}
+                </span>
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -369,15 +421,64 @@ export default function StatsForm() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {stats.stats.map((stat) => (
-                    <TableRow key={stat.user}>
-                      <TableCell className='font-medium'>{stat.user}</TableCell>
-                      <TableCell>{stat.commits}</TableCell>
-                      <TableCell>{stat.linesAdded}</TableCell>
-                      <TableCell>{stat.linesRemoved}</TableCell>
-                      <TableCell>{stat.reviews}</TableCell>
-                    </TableRow>
-                  ))}
+                  {stats.stats.map((stat) => {
+                    const getRankingEmoji = (position: number) => {
+                      switch (position) {
+                        case 1:
+                          return '🏆';
+                        case 2:
+                          return '🥈';
+                        case 3:
+                          return '🥉';
+                        default:
+                          return '';
+                      }
+                    };
+
+                    // Create sorted arrays for each metric to determine rankings
+                    const commitsSorted = [...stats.stats].sort(
+                      (a, b) => b.commits - a.commits
+                    );
+                    const linesAddedSorted = [...stats.stats].sort(
+                      (a, b) => b.linesAdded - a.linesAdded
+                    );
+                    const linesRemovedSorted = [...stats.stats].sort(
+                      (a, b) => b.linesRemoved - a.linesRemoved
+                    );
+
+                    // Get rankings for current user
+                    const commitsRank =
+                      commitsSorted.findIndex((s) => s.user === stat.user) + 1;
+                    const linesAddedRank =
+                      linesAddedSorted.findIndex((s) => s.user === stat.user) +
+                      1;
+                    const linesRemovedRank =
+                      linesRemovedSorted.findIndex(
+                        (s) => s.user === stat.user
+                      ) + 1;
+
+                    return (
+                      <TableRow key={stat.user}>
+                        <TableCell className='font-medium'>
+                          {stat.user}
+                        </TableCell>
+                        <TableCell>
+                          {commitsRank}
+                          {getRankingEmoji(commitsRank)} {stat.commits}
+                        </TableCell>
+                        <TableCell>
+                          {linesAddedRank}
+                          {getRankingEmoji(linesAddedRank)} {stat.linesAdded}
+                        </TableCell>
+                        <TableCell>
+                          {linesRemovedRank}
+                          {getRankingEmoji(linesRemovedRank)}{' '}
+                          {stat.linesRemoved}
+                        </TableCell>
+                        <TableCell>{stat.reviews}</TableCell>
+                      </TableRow>
+                    );
+                  })}
                 </TableBody>
               </Table>
             </CardContent>
